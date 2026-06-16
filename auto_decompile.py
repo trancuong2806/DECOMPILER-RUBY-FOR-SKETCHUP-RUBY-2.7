@@ -11,7 +11,7 @@ require './dumper.so'
 module Sketchup
   def self.require(path)
     puts "Sketchup.require #{{path}}"
-    real_path = "zsu_vn_signed/zsu_vn/" + path.sub("zsu_vn/", "") + ".rb"
+    real_path = "{target_dir}/" + path.sub("{target_dir_basename}/", "") + ".rb"
     if File.exist?(real_path)
       begin
         require_relative real_path
@@ -54,7 +54,9 @@ def decompile_file(file_path):
     # 2. Write temp_runner.rb
     # Convert path to forward slashes for Ruby require_relative compatibility
     rel_path = os.path.relpath(file_path, start=".").replace("\\", "/")
-    runner_code = TEMPLATE.format(target_path=rel_path)
+    target_dir_fwd = TARGET_DIR.replace("\\", "/")
+    target_dir_basename = os.path.basename(TARGET_DIR.rstrip("\\/"))
+    runner_code = TEMPLATE.format(target_path=rel_path, target_dir=target_dir_fwd, target_dir_basename=target_dir_basename)
     with open("temp_runner.rb", "w", encoding="utf-8") as f:
         f.write(runner_code)
         
