@@ -26,7 +26,7 @@ TARGET_DIR = r"" # Plugin Mục tiêu vd: MyPlugin\my_plugin
 Dịch ngược đồng loạt toàn bộ các file từ bytecode
 python auto_decompile.py
 ```
-## Đồng bộ mã nguồn dịch ngược sang thư mục nghiệp vụ của plugin
+* Đồng bộ mã nguồn dịch ngược sang thư mục nghiệp vụ của plugin.
 ```
 python replace_decompiled.py
 ```
