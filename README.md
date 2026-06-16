@@ -1,4 +1,4 @@
-# COMPILER RUBY FOR SKETCHUP 2020-2026
+# DECOMPILER RUBY FOR SKETCHUP 2020-2026
 # Dự Án Dịch Ngược & Khôi Phục Mã Nguồn Plugin SketchUp Đang Sử Dụng rubyencoder (Không Áp Dụng Cho Các File .rbe)
 
 Dự án này tập trung vào việc dịch ngược (decompile) bytecode Ruby YARV 2.7, khôi phục mã nguồn logic hoàn chỉnh của plugin SketchUp và thực hiện các quy trình kiểm thử tĩnh tự động để đảm bảo code sạch lỗi cú pháp (`Syntax OK`) và tuân thủ đúng SketchUp API.
