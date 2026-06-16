@@ -2,7 +2,7 @@ import re
 import os
 
 """
-Project: DECOMPILER RUBY FOR SKETCHUP 2020-2026
+Project: DECOMPILER RUBY FOR SKETCHUP RUBY 2.7
 Author: Trần Cường
 Created: 16/06/2026
 License: BSD 2-Clause License
