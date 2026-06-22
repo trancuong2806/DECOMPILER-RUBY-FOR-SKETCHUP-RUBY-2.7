@@ -10,6 +10,7 @@
   - `instructions`: Danh sách các lệnh (opcodes) và các tham số (arguments) tương ứng.
   - `catch_table`: Bảng xử lý ngoại lệ (lưu các block `rescue`, `ensure`).
   - `children`: Danh sách các `ISeq` con (đại diện cho các khối code `block`, phương thức `def`, hoặc `class` nằm bên trong).
+
 *Logic: Thiết kế theo mô hình Cây (Tree Node), phù hợp để đệ quy phân tích cấu trúc lồng nhau của Ruby.*
 
 **🇬🇧 English:**
