@@ -1,45 +1,43 @@
 import re
 import os
-from .core.handlers import handle_simple_op
-from .utils import (
-    strip_outer_parens, get_put_value, get_method_args, 
-    wrap_if_complex, negate_expression, is_unconditionally_terminating,
-    sanitize_ruby_identifier
-)
+from ..utils import strip_outer_parens, get_put_value, get_method_args, wrap_if_complex, negate_expression, is_unconditionally_terminating, sanitize_ruby_identifier
 
-def translate_iseq(iseq, all_iseqs):
-    skipped_offsets = set()
-    defaults = {}
+class TranslatorEngine:
+    def __init__(self, iseq, all_iseqs):
+        self.iseq = iseq
+        self.all_iseqs = all_iseqs
+        self.skipped_offsets = set()
+        self.defaults = {}
     
-    def indent_code(lines, indent="  "):
+    def indent_code(self, lines, indent="  "):
         flat_lines = []
         for line in lines:
             flat_lines.extend(line.splitlines())
         return "\n".join(f"{indent}{l}" for l in flat_lines)
 
-    offset_to_idx = {instr['offset']: idx for idx, instr in enumerate(iseq.instructions)}
+        self.offset_to_idx = {instr['offset']: idx for idx, instr in enumerate(self.iseq.instructions)}
     
-    # Pre-scan for backward branches to identify loop headers
-    backward_branches = {} # start_idx -> list of branch_idx
-    for idx, instr in enumerate(iseq.instructions):
+        # Pre-scan for backward branches to identify loop headers
+        self.backward_branches = {} # start_idx -> list of branch_idx
+        for idx, instr in enumerate(self.iseq.instructions):
         op = instr['op']
         if op in ('branchif', 'branchunless', 'branchnil', 'jump'):
             try:
                 target_offset = int(instr['args'].split()[-1])
-                target_idx = offset_to_idx.get(target_offset)
+                target_idx = self.offset_to_idx.get(target_offset)
                 if target_idx is not None and target_idx < idx:
-                    backward_branches.setdefault(target_idx, []).append(idx)
+                    self.backward_branches.setdefault(target_idx, []).append(idx)
             except (ValueError, IndexError):
                 pass
     
-    # Precompute static child mappings to avoid dynamic state / lookahead side effects
-    child_matches = {}
-    for child in iseq.children:
-        child_matches.setdefault(child.name, []).append(child)
+        # Precompute static child mappings to avoid dynamic state / lookahead side effects
+        self.child_matches = {}
+        for child in self.iseq.children:
+        self.child_matches.setdefault(child.name, []).append(child)
         
-    child_counts = {}
-    pc_to_child = {}
-    for idx, instr in enumerate(iseq.instructions):
+        self.child_counts = {}
+        self.pc_to_child = {}
+        for idx, instr in enumerate(self.iseq.instructions):
         op = instr['op']
         args = instr['args']
         child_name = None
@@ -54,42 +52,42 @@ def translate_iseq(iseq, all_iseqs):
         elif op == 'send':
             parts = args.split(', ')
             block_name = parts[-1].strip()
-            if block_name in child_matches:
+            if block_name in self.child_matches:
                 child_name = block_name
                 
         if child_name:
-            matches = child_matches.get(child_name, [])
-            count = child_counts.get(child_name, 0)
-            child_counts[child_name] = count + 1
+            matches = self.child_matches.get(child_name, [])
+            count = self.child_counts.get(child_name, 0)
+            self.child_counts[child_name] = count + 1
             if count < len(matches):
-                pc_to_child[idx] = matches[count]
+                self.pc_to_child[idx] = matches[count]
             else:
-                pc_to_child[idx] = all_iseqs.get(child_name)
+                self.pc_to_child[idx] = all_self.iseqs.get(child_name)
 
-    resolved_counts = {}
-    def resolve_child(name, pc=None):
-        if pc is not None and pc in pc_to_child:
-            return pc_to_child[pc]
-        count = resolved_counts.get(name, 0)
-        resolved_counts[name] = count + 1
-        matches = [c for c in iseq.children if c.name == name]
+        self.resolved_counts = {}
+    def resolve_child(self, name, pc=None):
+        if pc is not None and pc in self.pc_to_child:
+            return self.pc_to_child[pc]
+        count = self.resolved_counts.get(name, 0)
+        self.resolved_counts[name] = count + 1
+        matches = [c for c in self.iseq.children if c.name == name]
         if count < len(matches):
             return matches[count]
-        return all_iseqs.get(name)
+        return all_self.iseqs.get(name)
 
-    is_block_or_class = ("block" in iseq.name) or iseq.name.startswith("<class:") or iseq.name.startswith("<module:")
-    is_class_or_module = iseq.name.startswith("<class:") or iseq.name.startswith("<module:")
+        self.is_block_or_class = ("block" in self.iseq.name) or self.iseq.name.startswith("<class:") or self.iseq.name.startswith("<module:")
+        self.is_class_or_module = self.iseq.name.startswith("<class:") or self.iseq.name.startswith("<module:")
 
-    def get_simple_return_val(target_idx, cond=None):
-        if is_class_or_module:
+    def get_simple_return_val(self, target_idx, cond=None):
+        if self.is_class_or_module:
             return None
-        if target_idx < 0 or target_idx >= len(iseq.instructions):
+        if target_idx < 0 or target_idx >= len(self.iseq.instructions):
             return None
         scan_idx = target_idx
         block_instrs = []
         has_setn = False
-        while scan_idx < len(iseq.instructions):
-            instr = iseq.instructions[scan_idx]
+        while scan_idx < len(self.iseq.instructions):
+            instr = self.iseq.instructions[scan_idx]
             op = instr['op']
             if op in ('jump', 'branchif', 'branchunless', 'branchnil', 'opt_case_dispatch', 'newhash', 'newarray', 'duparray', 'duphash'):
                 return None
@@ -111,27 +109,27 @@ def translate_iseq(iseq, all_iseqs):
             offsets = [instr['offset'] for instr in block_instrs]
             return cond, offsets
             
-        # Backup resolved_counts to prevent dynamic side-effects during look-ahead
-        saved_counts = resolved_counts.copy()
+        # Backup self.resolved_counts to prevent dynamic side-effects during look-ahead
+        saved_counts = self.resolved_counts.copy()
         sub_stack = []
-        translate_range(target_idx, target_idx + len(block_instrs) - 1, sub_stack, pop_final=False)
-        resolved_counts.clear()
-        resolved_counts.update(saved_counts)
+        self.translate_range(target_idx, target_idx + len(block_instrs) - 1, sub_stack, pop_final=False)
+        self.resolved_counts.clear()
+        self.resolved_counts.update(saved_counts)
         
         offsets = [instr['offset'] for instr in block_instrs]
         if sub_stack:
             return sub_stack[-1], offsets
         return 'nil', offsets
 
-    def get_early_return_val(start_idx, end_idx):
-        if is_class_or_module:
+    def get_early_return_val(self, start_idx, end_idx):
+        if self.is_class_or_module:
             return None
-        if start_idx > end_idx or start_idx < 0 or end_idx >= len(iseq.instructions):
+        if start_idx > end_idx or start_idx < 0 or end_idx >= len(self.iseq.instructions):
             return None
         scan_idx = start_idx
         block_instrs = []
         while scan_idx <= end_idx:
-            instr = iseq.instructions[scan_idx]
+            instr = self.iseq.instructions[scan_idx]
             op = instr['op']
             if op in ('jump', 'branchif', 'branchunless', 'branchnil', 'opt_case_dispatch', 'newhash', 'newarray', 'duparray', 'duphash'):
                 return None
@@ -150,25 +148,25 @@ def translate_iseq(iseq, all_iseqs):
         if not block_instrs or block_instrs[-1]['op'] != 'leave':
             return None
             
-        # Backup resolved_counts to prevent dynamic side-effects during look-ahead
-        saved_counts = resolved_counts.copy()
+        # Backup self.resolved_counts to prevent dynamic side-effects during look-ahead
+        saved_counts = self.resolved_counts.copy()
         sub_stack = []
-        translate_range(start_idx, end_idx, sub_stack, pop_final=False)
-        resolved_counts.clear()
-        resolved_counts.update(saved_counts)
+        self.translate_range(start_idx, end_idx, sub_stack, pop_final=False)
+        self.resolved_counts.clear()
+        self.resolved_counts.update(saved_counts)
         
         if sub_stack:
             return sub_stack[-1]
         return 'nil'
 
-    def is_early_return_path(start_idx, end_idx):
-        if is_class_or_module:
+    def is_early_return_path(self, start_idx, end_idx):
+        if self.is_class_or_module:
             return False
-        if start_idx > end_idx or start_idx < 0 or end_idx >= len(iseq.instructions):
+        if start_idx > end_idx or start_idx < 0 or end_idx >= len(self.iseq.instructions):
             return False
         scan_idx = start_idx
         while scan_idx <= end_idx:
-            instr = iseq.instructions[scan_idx]
+            instr = self.iseq.instructions[scan_idx]
             op = instr['op']
             if op in ('jump', 'branchif', 'branchunless', 'branchnil', 'opt_case_dispatch', 'newhash', 'newarray', 'duparray', 'duphash'):
                 return False
@@ -177,7 +175,7 @@ def translate_iseq(iseq, all_iseqs):
             scan_idx += 1
         return False
     
-    def translate_range(start_idx, end_idx, stack, pop_final=True, is_root=False, ignored_catches=None):
+    def translate_range(self, start_idx, end_idx, stack, pop_final=True, is_root=False, ignored_catches=None):
         if ignored_catches is None:
             ignored_catches = set()
         statements = []
@@ -196,33 +194,33 @@ def translate_iseq(iseq, all_iseqs):
             current_pc = start_pc
             current_cond = start_cond
             
-            instr = iseq.instructions[current_pc]
+            instr = self.iseq.instructions[current_pc]
             current_op = instr['op']
             current_target_offset = int(instr['args'].split()[-1])
-            current_target_idx = offset_to_idx.get(current_target_offset)
+            current_target_idx = self.offset_to_idx.get(current_target_offset)
             if current_target_idx is None:
                 return current_cond, current_op, current_target_idx, current_pc
                 
             while True:
                 inner_pc = -1
                 for idx in range(current_pc + 1, min(current_target_idx, end_idx)):
-                    if iseq.instructions[idx]['op'] in ('branchif', 'branchunless', 'branchnil'):
+                    if self.iseq.instructions[idx]['op'] in ('branchif', 'branchunless', 'branchnil'):
                         inner_pc = idx
                         break
                 
                 if inner_pc == -1:
                     break
                     
-                inner_instr = iseq.instructions[inner_pc]
+                inner_instr = self.iseq.instructions[inner_pc]
                 inner_op = inner_instr['op']
                 inner_target_offset = int(inner_instr['args'].split()[-1])
-                inner_target_idx = offset_to_idx.get(inner_target_offset)
+                inner_target_idx = self.offset_to_idx.get(inner_target_offset)
                 if inner_target_idx is None:
                     break
                     
                 is_fallthrough = True
                 for idx in range(inner_pc + 1, current_target_idx):
-                    if iseq.instructions[idx]['op'] != 'nop':
+                    if self.iseq.instructions[idx]['op'] != 'nop':
                         is_fallthrough = False
                         break
                         
@@ -259,7 +257,7 @@ def translate_iseq(iseq, all_iseqs):
                     
                 if merge_match and new_pc > current_pc:
                     inner_stack = list(stack)
-                    setup_stmts = translate_range(current_pc + 1, inner_pc, inner_stack, pop_final=False)
+                    setup_stmts = self.translate_range(current_pc + 1, inner_pc, inner_stack, pop_final=False)
                     for stmt in setup_stmts:
                         append_statement(stmt)
                     cond2 = inner_stack[-1] if inner_stack else '<empty_cond>'
@@ -276,17 +274,17 @@ def translate_iseq(iseq, all_iseqs):
         pc = start_idx
         while pc < end_idx:
             # Check if current pc starts any rescue/catch regions
-            current_offset = iseq.instructions[pc]['offset']
-            matching_catches = [c for c in iseq.catch_table if c['type'] == 'rescue' and c['st'] == current_offset and id(c) not in ignored_catches]
+            current_offset = self.iseq.instructions[pc]['offset']
+            matching_catches = [c for c in self.iseq.catch_table if c['type'] == 'rescue' and c['st'] == current_offset and id(c) not in ignored_catches]
             if matching_catches:
                 # Find the maximum ed offset
                 ed_offset = max(c['ed'] for c in matching_catches)
-                ed_idx = offset_to_idx.get(ed_offset)
+                ed_idx = self.offset_to_idx.get(ed_offset)
                 if ed_idx is not None and ed_idx >= pc:
                     # Translate the body of the begin block
                     body_stack = list(stack)
                     new_ignored = ignored_catches.union(id(c) for c in matching_catches)
-                    body_statements = translate_range(pc, ed_idx + 1, body_stack, pop_final=False, is_root=False, ignored_catches=new_ignored)
+                    body_statements = self.translate_range(pc, ed_idx + 1, body_stack, pop_final=False, is_root=False, ignored_catches=new_ignored)
                     
                     stack.clear()
                     stack.extend(body_stack)
@@ -294,24 +292,24 @@ def translate_iseq(iseq, all_iseqs):
                     # Translate rescue clauses
                     rescue_clauses = []
                     
-                    # Map rescue catches to child rescue iseqs
-                    all_rescue_iseqs = [child for child in iseq.children if "rescue" in child.name]
-                    all_rescue_catches = [c for c in iseq.catch_table if c['type'] == 'rescue']
+                    # Map rescue catches to child rescue self.iseqs
+                    all_rescue_self.iseqs = [child for child in self.iseq.children if "rescue" in child.name]
+                    all_rescue_catches = [c for c in self.iseq.catch_table if c['type'] == 'rescue']
                     
                     for entry in matching_catches:
-                        rescue_iseq = None
+                        rescue_self.iseq = None
                         try:
                             catch_idx = all_rescue_catches.index(entry)
-                            if catch_idx < len(all_rescue_iseqs):
-                                rescue_iseq = all_rescue_iseqs[catch_idx]
+                            if catch_idx < len(all_rescue_self.iseqs):
+                                rescue_self.iseq = all_rescue_self.iseqs[catch_idx]
                         except ValueError:
                             pass
                             
                         exc_class = "StandardError"
                         rescue_code = ""
-                        if rescue_iseq:
+                        if rescue_self.iseq:
                             # Extract exception class
-                            for instr in rescue_iseq.instructions:
+                            for instr in rescue_self.iseq.instructions:
                                 if instr['op'] == 'getconstant':
                                     exc_class = instr['args'].lstrip(':').strip()
                                     break
@@ -319,7 +317,7 @@ def translate_iseq(iseq, all_iseqs):
                             # Find rescue body between branchunless and its target
                             branchunless_idx = -1
                             target_offset = -1
-                            for idx, instr in enumerate(rescue_iseq.instructions):
+                            for idx, instr in enumerate(rescue_self.iseq.instructions):
                                 if instr['op'] == 'branchunless':
                                     branchunless_idx = idx
                                     try:
@@ -330,30 +328,30 @@ def translate_iseq(iseq, all_iseqs):
                                     
                             if branchunless_idx != -1 and target_offset != -1:
                                 target_idx = -1
-                                for idx, instr in enumerate(rescue_iseq.instructions):
+                                for idx, instr in enumerate(rescue_self.iseq.instructions):
                                     if instr['offset'] == target_offset:
                                         target_idx = idx
                                         break
                                 if target_idx != -1:
                                     # Copy and slice instructions to translate only the rescue branch
                                     import copy
-                                    sub_iseq = copy.copy(rescue_iseq)
-                                    sub_iseq.instructions = rescue_iseq.instructions[branchunless_idx + 1 : target_idx]
-                                    while sub_iseq.instructions and sub_iseq.instructions[-1]['op'] == 'leave':
-                                        sub_iseq.instructions.pop()
-                                    # Backup and restore resolved_counts to prevent recursion side effects
-                                    saved_counts = resolved_counts.copy()
-                                    rescue_code = translate_iseq(sub_iseq, all_iseqs)
-                                    resolved_counts.clear()
-                                    resolved_counts.update(saved_counts)
+                                    sub_self.iseq = copy.copy(rescue_self.iseq)
+                                    sub_self.iseq.instructions = rescue_self.iseq.instructions[branchunless_idx + 1 : target_idx]
+                                    while sub_self.iseq.instructions and sub_self.iseq.instructions[-1]['op'] == 'leave':
+                                        sub_self.iseq.instructions.pop()
+                                    # Backup and restore self.resolved_counts to prevent recursion side effects
+                                    saved_counts = self.resolved_counts.copy()
+                                    rescue_code = translate_self.iseq(sub_self.iseq, all_self.iseqs)
+                                    self.resolved_counts.clear()
+                                    self.resolved_counts.update(saved_counts)
                                     
-                        rescue_str = indent_code([rescue_code]) if rescue_code else ""
+                        rescue_str = self.indent_code([rescue_code]) if rescue_code else ""
                         clause = f"rescue {exc_class}"
                         if rescue_str:
                             clause += f"\n{rescue_str}"
                         rescue_clauses.append(clause)
                         
-                    body_str = indent_code(body_statements)
+                    body_str = self.indent_code(body_statements)
                     rescue_block = f"begin\n{body_str}\n" + "\n".join(rescue_clauses) + "\nend"
                     append_statement(rescue_block)
                     
@@ -362,16 +360,16 @@ def translate_iseq(iseq, all_iseqs):
                     continue
 
             # Check for backward branches (begin...end while/until loops)
-            if pc in backward_branches:
-                valid_branches = [b for b in backward_branches[pc] if b < end_idx]
+            if pc in self.backward_branches:
+                valid_branches = [b for b in self.backward_branches[pc] if b < end_idx]
                 if valid_branches:
                     loop_end_idx = max(valid_branches)
-                    loop_branch_op = iseq.instructions[loop_end_idx]['op']
+                    loop_branch_op = self.iseq.instructions[loop_end_idx]['op']
                     
                     if loop_branch_op == 'jump':
                         body_stack = list(stack)
-                        body_code = translate_range(pc, loop_end_idx, body_stack, pop_final=False)
-                        body_str = indent_code(body_code)
+                        body_code = self.translate_range(pc, loop_end_idx, body_stack, pop_final=False)
+                        body_str = self.indent_code(body_code)
                         append_statement(f"while true\n{body_str}\nend")
                         stack.clear()
                         stack.extend(body_stack)
@@ -379,9 +377,9 @@ def translate_iseq(iseq, all_iseqs):
                         continue
                     elif loop_branch_op in ('branchif', 'branchunless'):
                         body_stack = list(stack)
-                        body_code = translate_range(pc, loop_end_idx, body_stack, pop_final=False)
+                        body_code = self.translate_range(pc, loop_end_idx, body_stack, pop_final=False)
                         cond = body_stack.pop() if body_stack else 'true'
-                        body_str = indent_code(body_code)
+                        body_str = self.indent_code(body_code)
                         break_word = "unless" if loop_branch_op == "branchif" else "if"
                         body_str += f"\n  break {break_word} {cond}"
                         append_statement(f"while true\n{body_str}\nend")
@@ -390,12 +388,12 @@ def translate_iseq(iseq, all_iseqs):
                         pc = loop_end_idx + 1
                         continue
 
-            instr = iseq.instructions[pc]
+            instr = self.iseq.instructions[pc]
             op = instr['op']
             args = instr['args']
             offset = instr['offset']
             
-            if offset in skipped_offsets:
+            if offset in self.skipped_offsets:
                 pc += 1
                 continue
                 
@@ -408,25 +406,25 @@ def translate_iseq(iseq, all_iseqs):
                 
                 is_nested_defined = False
                 if type_flag == 'constant' and pc + 2 < end_idx:
-                    next_instr = iseq.instructions[pc + 1]
+                    next_instr = self.iseq.instructions[pc + 1]
                     if next_instr['op'] == 'branchunless':
                         try:
                             target_offset = int(next_instr['args'].split()[-1])
-                            if target_offset in offset_to_idx:
-                                target_idx = offset_to_idx[target_offset]
+                            if target_offset in self.offset_to_idx:
+                                target_idx = self.offset_to_idx[target_offset]
                                 defined_from_idx = -1
                                 for scan_idx in range(pc + 2, target_idx):
-                                    scan_instr = iseq.instructions[scan_idx]
+                                    scan_instr = self.iseq.instructions[scan_idx]
                                     if scan_instr['op'] == 'defined' and 'constant-from' in scan_instr['args']:
                                         defined_from_idx = scan_idx
                                         break
                                 
-                                if defined_from_idx != -1 and defined_from_idx + 2 < len(iseq.instructions):
-                                    swap_instr = iseq.instructions[defined_from_idx + 1]
-                                    pop_instr = iseq.instructions[defined_from_idx + 2]
+                                if defined_from_idx != -1 and defined_from_idx + 2 < len(self.iseq.instructions):
+                                    swap_instr = self.iseq.instructions[defined_from_idx + 1]
+                                    pop_instr = self.iseq.instructions[defined_from_idx + 2]
                                     if swap_instr['op'] == 'swap' and pop_instr['op'] == 'pop' and defined_from_idx + 3 == target_idx:
                                         is_nested_defined = True
-                                        from_parts = iseq.instructions[defined_from_idx]['args'].split(', ')
+                                        from_parts = self.iseq.instructions[defined_from_idx]['args'].split(', ')
                                         child_const = from_parts[1].lstrip(':').strip()
                                         
                                         stack.append(f"defined?({const_name}::{child_const})")
@@ -456,7 +454,7 @@ def translate_iseq(iseq, all_iseqs):
                     content = val
                     if (content.startswith('"') and content.endswith('"')) or (content.startswith("'") and content.endswith("'")):
                         content = content[1:-1]
-                    if iseq.filepath and os.path.normpath(content).lower() == os.path.normpath(iseq.filepath).lower():
+                    if self.iseq.filepath and os.path.normpath(content).lower() == os.path.normpath(self.iseq.filepath).lower():
                         val = '__FILE__'
                 if op == 'putobject' and '..' in val and not (val.startswith('(') or val.startswith('"') or val.startswith("'") or val.startswith(':')):
                     val = f"({val})"
@@ -603,14 +601,14 @@ def translate_iseq(iseq, all_iseqs):
                 if op == 'send':
                     parts = args.split(', ')
                     block_name = parts[-1].strip()
-                    block_iseq = resolve_child(block_name, pc)
-                    if block_iseq:
-                        block_skipped, block_defaults = scan_defaults(block_iseq)
-                        block_code = translate_iseq(block_iseq, all_iseqs)
-                        block_args_list = get_method_args(block_iseq, block_defaults)
+                    block_self.iseq = self.resolve_child(block_name, pc)
+                    if block_self.iseq:
+                        block_skipped, block_defaults = self.scan_defaults(block_self.iseq)
+                        block_code = translate_self.iseq(block_self.iseq, all_self.iseqs)
+                        block_args_list = get_method_args(block_self.iseq, block_defaults)
                         block_args_str = ", ".join(block_args_list)
                         block_args_fmt = f"|{block_args_str}|" if block_args_str else ""
-                        indented_code = indent_code([block_code])
+                        indented_code = self.indent_code([block_code])
                         if M == 'lambda':
                             block_part = f" ->({block_args_str}) {{\n{indented_code}\n}}"
                         else:
@@ -674,8 +672,158 @@ def translate_iseq(iseq, all_iseqs):
                     
                 stack.append(expr)
                 
-            elif handle_simple_op(op, args, stack, append_statement):
-                pass
+            elif op == 'opt_plus':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    # Tối ưu: Bóc ngoặc ở vế trái nếu an toàn (không chứa toán tử ưu tiên thấp hơn)
+                    # Giúp tránh tình trạng ((a + b) + c) -> (a + b + c)
+                    lhs_clean = strip_outer_parens(lhs)
+                    if not any(op_in in lhs_clean for op_in in [' == ', ' != ', ' && ', ' || ', ' ? ', ' .. ']):
+                        lhs = lhs_clean
+                    stack.append(f"({lhs} + {rhs})")
+            elif op == 'opt_minus':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    lhs_clean = strip_outer_parens(lhs)
+                    if not any(op_in in lhs_clean for op_in in [' == ', ' != ', ' && ', ' || ', ' ? ', ' .. ']):
+                        lhs = lhs_clean
+                    stack.append(f"({lhs} - {rhs})")
+            elif op == 'opt_div':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    lhs_clean = strip_outer_parens(lhs)
+                    if not any(op_in in lhs_clean for op_in in [' + ', ' - ', ' == ', ' != ', ' && ', ' || ', ' ? ', ' .. ']):
+                        lhs = lhs_clean
+                    stack.append(f"({lhs} / {rhs})")
+            elif op == 'opt_mult':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    lhs_clean = strip_outer_parens(lhs)
+                    if not any(op_in in lhs_clean for op_in in [' + ', ' - ', ' == ', ' != ', ' && ', ' || ', ' ? ', ' .. ']):
+                        lhs = lhs_clean
+                    stack.append(f"({lhs} * {rhs})")
+            elif op == 'opt_mod':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    lhs_clean = strip_outer_parens(lhs)
+                    if not any(op_in in lhs_clean for op_in in [' + ', ' - ', ' == ', ' != ', ' && ', ' || ', ' ? ', ' .. ']):
+                        lhs = lhs_clean
+                    stack.append(f"({lhs} % {rhs})")
+            elif op == 'opt_ltlt':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"{lhs} << {rhs}")
+            elif op == 'opt_gtgt':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"{lhs} >> {rhs}")
+            elif op == 'opt_and':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} & {rhs})")
+            elif op == 'opt_or':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} | {rhs})")
+            elif op == 'opt_xor':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} ^ {rhs})")
+            elif op == 'opt_empty_p':
+                if stack:
+                    recv = stack.pop()
+                    stack.append(f"{recv}.empty?")
+            elif op == 'opt_nil_p':
+                if stack:
+                    val = stack.pop()
+                    stack.append(f"{val}.nil?")
+            elif op == 'opt_length':
+                if stack:
+                    recv = stack.pop()
+                    stack.append(f"{recv}.length")
+            elif op == 'opt_size':
+                if stack:
+                    recv = stack.pop()
+                    stack.append(f"{recv}.size")
+            elif op == 'newrange':
+                flag = int(args.split()[0])
+                if len(stack) >= 2:
+                    high = stack.pop()
+                    low = stack.pop()
+                    op_range = '...' if flag == 1 else '..'
+                    stack.append(f"({strip_outer_parens(low)}{op_range}{strip_outer_parens(high)})")
+            elif op in ('opt_newarray_max', 'opt_newarray_min'):
+                n = int(args.strip())
+                elems = []
+                for _ in range(n):
+                    if stack:
+                        elems.append(stack.pop())
+                elems.reverse()
+                suffix = 'max' if op == 'opt_newarray_max' else 'min'
+                stack.append(f"[{', '.join(elems)}].{suffix}")
+            elif op == 'opt_eq':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} == {rhs})")
+            elif op == 'opt_ge':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} >= {rhs})")
+            elif op == 'opt_le':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} <= {rhs})")
+            elif op == 'opt_neq':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} != {rhs})")
+            elif op == 'opt_lt':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} < {rhs})")
+            elif op == 'opt_gt':
+                if len(stack) >= 2:
+                    rhs = stack.pop()
+                    lhs = stack.pop()
+                    stack.append(f"({lhs} > {rhs})")
+            elif op == 'opt_not':
+                if stack:
+                    val = stack.pop()
+                    # Sử dụng cấu trúc negate_expression thông minh để chuẩn hóa !(!(x)) -> !!(x)
+                    stack.append(negate_expression(val))
+            elif op == 'opt_aref':
+                if len(stack) >= 2:
+                    idx = stack.pop()
+                    recv = stack.pop()
+                    stack.append(f"{recv}[{idx}]")
+            elif op == 'opt_aset':
+                if len(stack) >= 3:
+                    val = stack.pop()
+                    idx = stack.pop()
+                    recv = stack.pop()
+                    append_statement(f"{recv}[{idx}] = {strip_outer_parens(val)}")
+            elif op == 'opt_aset_with':
+                parts = args.split(', ')
+                key = parts[0].strip()
+                if len(stack) >= 2:
+                    val = stack.pop()
+                    recv = stack.pop()
+                    append_statement(f"{recv}[{key}] = {strip_outer_parens(val)}")
             elif op in ('opt_match_with_out_recv', 'opt_match'):
                 if len(stack) >= 2:
                     target = stack.pop()
@@ -689,11 +837,11 @@ def translate_iseq(iseq, all_iseqs):
             elif op == 'dup':
                 is_str_interpolation = False
                 if pc + 5 < end_idx:
-                    i1 = iseq.instructions[pc + 1]
-                    i2 = iseq.instructions[pc + 2]
-                    i3 = iseq.instructions[pc + 3]
-                    i4 = iseq.instructions[pc + 4]
-                    i5 = iseq.instructions[pc + 5]
+                    i1 = self.iseq.instructions[pc + 1]
+                    i2 = self.iseq.instructions[pc + 2]
+                    i3 = self.iseq.instructions[pc + 3]
+                    i4 = self.iseq.instructions[pc + 4]
+                    i5 = self.iseq.instructions[pc + 5]
                     if (i1['op'] == 'checktype' and 'T_STRING' in i1['args'] and
                         i2['op'] == 'branchif' and
                         i3['op'] == 'dup' and
@@ -701,8 +849,8 @@ def translate_iseq(iseq, all_iseqs):
                         i5['op'] == 'tostring'):
                         try:
                             target_offset = int(i2['args'].split()[-1])
-                            if target_offset in offset_to_idx:
-                                target_idx = offset_to_idx[target_offset]
+                            if target_offset in self.offset_to_idx:
+                                target_idx = self.offset_to_idx[target_offset]
                                 if target_idx == pc + 6:
                                     is_str_interpolation = True
                         except ValueError:
@@ -716,14 +864,14 @@ def translate_iseq(iseq, all_iseqs):
 
                 is_short_circuit = False
                 if pc + 2 < end_idx:
-                    next_instr = iseq.instructions[pc + 1]
-                    next_next_instr = iseq.instructions[pc + 2]
+                    next_instr = self.iseq.instructions[pc + 1]
+                    next_next_instr = self.iseq.instructions[pc + 2]
                     if next_instr['op'] in ('branchunless', 'branchif', 'branchnil') and next_next_instr['op'] == 'pop':
                         branch_op = next_instr['op']
                         try:
                             target_offset = int(next_instr['args'].split()[-1])
-                            if target_offset in offset_to_idx:
-                                target_idx = offset_to_idx[target_offset]
+                            if target_offset in self.offset_to_idx:
+                                target_idx = self.offset_to_idx[target_offset]
                                 if target_idx > pc + 2:
                                     is_short_circuit = True
                         except ValueError:
@@ -731,7 +879,7 @@ def translate_iseq(iseq, all_iseqs):
                 
                 if is_short_circuit:
                     sub_stack = []
-                    sub_statements = translate_range(pc + 3, target_idx, sub_stack, pop_final=False, ignored_catches=ignored_catches)
+                    sub_statements = self.translate_range(pc + 3, target_idx, sub_stack, pop_final=False, ignored_catches=ignored_catches)
                     if sub_stack:
                         B_expr = sub_stack[-1]
                         A_expr = stack.pop() if stack else '<empty_cond>'
@@ -760,7 +908,7 @@ def translate_iseq(iseq, all_iseqs):
                                 append_statement(f"{sub_statements[0]} {cond_word} {A_expr}")
                             else:
                                 cond_word = 'if' if branch_op == 'branchunless' else 'unless'
-                                indented = indent_code(sub_statements)
+                                indented = self.indent_code(sub_statements)
                                 append_statement(f"{cond_word} {A_expr}\n{indented}\nend")
                             pc = target_idx - 1
                         else:
@@ -894,11 +1042,11 @@ def translate_iseq(iseq, all_iseqs):
                     stack.pop()
                 
                 body_code = ""
-                body_iseq = resolve_child(body_name, pc)
-                if body_iseq:
-                    body_code = translate_iseq(body_iseq, all_iseqs)
+                body_self.iseq = self.resolve_child(body_name, pc)
+                if body_self.iseq:
+                    body_code = translate_self.iseq(body_self.iseq, all_self.iseqs)
                     
-                indented_body = indent_code([body_code])
+                indented_body = self.indent_code([body_code])
                 type_flag = class_type & 3
                 if type_flag == 2:
                     class_header = f"module {class_name}"
@@ -920,14 +1068,14 @@ def translate_iseq(iseq, all_iseqs):
                 
                 body_code = ""
                 method_args_str = ""
-                body_iseq = resolve_child(body_name, pc)
-                if body_iseq:
-                    body_skipped, body_defaults = scan_defaults(body_iseq)
-                    body_code = translate_iseq(body_iseq, all_iseqs)
-                    args_list = get_method_args(body_iseq, body_defaults)
+                body_self.iseq = self.resolve_child(body_name, pc)
+                if body_self.iseq:
+                    body_skipped, body_defaults = self.scan_defaults(body_self.iseq)
+                    body_code = translate_self.iseq(body_self.iseq, all_self.iseqs)
+                    args_list = get_method_args(body_self.iseq, body_defaults)
                     method_args_str = f"({', '.join(args_list)})" if args_list else ""
                     
-                indented_body = indent_code([body_code])
+                indented_body = self.indent_code([body_code])
                 prefix = "self." if op == 'definesmethod' else ""
                 append_statement(f"def {prefix}{method_name}{method_args_str}\n{indented_body}\nend")
             elif op == 'opt_case_dispatch':
@@ -937,10 +1085,10 @@ def translate_iseq(iseq, all_iseqs):
                 cases = []
                 scan_pc = pc + 1
                 while scan_pc + 3 < end_idx:
-                    instr1 = iseq.instructions[scan_pc]
-                    instr2 = iseq.instructions[scan_pc + 1]
-                    instr3 = iseq.instructions[scan_pc + 2]
-                    instr4 = iseq.instructions[scan_pc + 3]
+                    instr1 = self.iseq.instructions[scan_pc]
+                    instr2 = self.iseq.instructions[scan_pc + 1]
+                    instr3 = self.iseq.instructions[scan_pc + 2]
+                    instr4 = self.iseq.instructions[scan_pc + 3]
                     val = get_put_value(instr2)
                     if (instr1['op'] == 'dup' and 
                         val is not None and 
@@ -948,7 +1096,7 @@ def translate_iseq(iseq, all_iseqs):
                         instr4['op'] == 'branchif'):
                         key = val
                         target_offset = int(instr4['args'].split()[-1])
-                        target_idx = offset_to_idx[target_offset]
+                        target_idx = self.offset_to_idx[target_offset]
                         cases.append((key, target_idx))
                         scan_pc += 4
                     else:
@@ -958,28 +1106,28 @@ def translate_iseq(iseq, all_iseqs):
                 if cases:
                     max_target = pc
                     for scan_idx in range(pc, min(end_idx, pc + 100)):
-                        scan_instr = iseq.instructions[scan_idx]
+                        scan_instr = self.iseq.instructions[scan_idx]
                         if isinstance(scan_instr, dict) and scan_instr.get('op') == 'jump':
                             try:
                                 t = int(scan_instr['args'][0]) if isinstance(scan_instr['args'], list) else int(scan_instr['args'].split()[-1])
-                                if t > max_target and (not cases or t >= iseq.instructions[cases[-1][1]]['offset']):
+                                if t > max_target and (not cases or t >= self.iseq.instructions[cases[-1][1]]['offset']):
                                     max_target = t
                             except ValueError:
                                 pass
-                    if max_target > pc and max_target in offset_to_idx:
-                        after_case_idx = offset_to_idx[max_target]
+                    if max_target > pc and max_target in self.offset_to_idx:
+                        after_case_idx = self.offset_to_idx[max_target]
                             
                 case_lines = [f"case {expr}"]
                 has_when_val = False
                 for i, (key, target_idx) in enumerate(cases):
                     next_target_idx = cases[i+1][1] if i+1 < len(cases) else after_case_idx
                     when_stack = list(stack)
-                    when_code = translate_range(target_idx + 1, next_target_idx - 1, when_stack, pop_final=False)
+                    when_code = self.translate_range(target_idx + 1, next_target_idx - 1, when_stack, pop_final=False)
                     
                     if len(when_stack) > len(stack):
                         has_when_val = True
                     when_val = when_stack[-1] if len(when_stack) > len(stack) else 'nil'
-                    when_str = indent_code(when_code)
+                    when_str = self.indent_code(when_code)
                     if when_val != 'nil':
                         if when_str: when_str += f"\n  {when_val}"
                         else: when_str = f"  {when_val}"
@@ -989,9 +1137,9 @@ def translate_iseq(iseq, all_iseqs):
                         case_lines.append(when_str)
                         
                 else_stack = list(stack)
-                else_code = translate_range(scan_pc + 1, cases[0][1] - 1, else_stack, pop_final=False) if cases else []
+                else_code = self.translate_range(scan_pc + 1, cases[0][1] - 1, else_stack, pop_final=False) if cases else []
                 else_val = else_stack[-1] if len(else_stack) > len(stack) else 'nil'
-                else_str = indent_code(else_code)
+                else_str = self.indent_code(else_code)
                 if else_val != 'nil':
                     if else_str: else_str += f"\n  {else_val}"
                     else: else_str = f"  {else_val}"
@@ -1044,13 +1192,13 @@ def translate_iseq(iseq, all_iseqs):
                 op = merged_op
                 target_idx = merged_target_idx
                 pc = merged_pc
-                target_offset = iseq.instructions[target_idx]['offset'] if (target_idx is not None and target_idx < len(iseq.instructions)) else 'unknown'
+                target_offset = self.iseq.instructions[target_idx]['offset'] if (target_idx is not None and target_idx < len(self.iseq.instructions)) else 'unknown'
                 
-                keyword = "next" if ("block" in iseq.name) else "return"
+                keyword = "next" if ("block" in self.iseq.name) else "return"
                 
                 if op in ('branchunless', 'branchnil'):
                     # Check for early return in non-jumping path
-                    early_ret = get_early_return_val(pc + 1, target_idx - 1) if target_idx > pc + 1 else None
+                    early_ret = self.get_early_return_val(pc + 1, target_idx - 1) if target_idx > pc + 1 else None
                     if early_ret is not None:
                         if early_ret != 'nil':
                             if early_ret.startswith(('raise', 'exit')):
@@ -1060,8 +1208,8 @@ def translate_iseq(iseq, all_iseqs):
                         else:
                             append_statement(f"{keyword} if {cond}")
                         pc = target_idx - 1
-                    elif get_simple_return_val(target_idx, cond) is not None:
-                        ret_val, ret_offsets = get_simple_return_val(target_idx, cond)
+                    elif self.get_simple_return_val(target_idx, cond) is not None:
+                        ret_val, ret_offsets = self.get_simple_return_val(target_idx, cond)
                         if ret_val != 'nil':
                             if ret_val.startswith(('raise', 'exit')):
                                 append_statement(f"{ret_val} unless {cond}")
@@ -1069,13 +1217,13 @@ def translate_iseq(iseq, all_iseqs):
                                 append_statement(f"{keyword} {ret_val} unless {cond}")
                         else:
                             append_statement(f"{keyword} unless {cond}")
-                        skipped_offsets.update(ret_offsets)
-                    elif target_idx > pc and is_early_return_path(pc + 1, target_idx - 1):
+                        self.skipped_offsets.update(ret_offsets)
+                    elif target_idx > pc and self.is_early_return_path(pc + 1, target_idx - 1):
                         then_stack = list(stack)
-                        then_code = translate_range(pc + 1, target_idx - 1, then_stack, pop_final=False)
+                        then_code = self.translate_range(pc + 1, target_idx - 1, then_stack, pop_final=False)
                         then_val = then_stack[-1] if len(then_stack) > len(stack) else 'nil'
                         if then_code:
-                            then_str = indent_code(then_code)
+                            then_str = self.indent_code(then_code)
                             if then_val != 'nil':
                                 then_str += f"\n  {keyword} {then_val}"
                             else:
@@ -1095,19 +1243,19 @@ def translate_iseq(iseq, all_iseqs):
                         has_else = False
                         else_target_idx = None
                         if target_idx > 0:
-                            prev_instr = iseq.instructions[target_idx - 1]
+                            prev_instr = self.iseq.instructions[target_idx - 1]
                             if prev_instr['op'] == 'jump':
                                 else_target_offset = int(prev_instr['args'].split()[-1])
-                                else_target_idx = offset_to_idx[else_target_offset]
+                                else_target_idx = self.offset_to_idx[else_target_offset]
                                 if else_target_idx >= target_idx and else_target_idx <= end_idx:
                                     has_else = True
                                     
                         if has_else:
                             then_stack = list(stack)
-                            then_code = translate_range(pc + 1, target_idx - 1, then_stack, pop_final=False)
+                            then_code = self.translate_range(pc + 1, target_idx - 1, then_stack, pop_final=False)
                             
                             else_stack = list(stack)
-                            else_code = translate_range(target_idx, else_target_idx, else_stack, pop_final=False)
+                            else_code = self.translate_range(target_idx, else_target_idx, else_stack, pop_final=False)
                             
                             is_expr = False
                             then_val = 'nil'
@@ -1117,8 +1265,8 @@ def translate_iseq(iseq, all_iseqs):
                                 merge_idx = else_target_idx if has_else else target_idx
                                 if merge_idx is not None:
                                     scan_idx = merge_idx
-                                    while scan_idx < len(iseq.instructions):
-                                        scan_op = iseq.instructions[scan_idx]['op']
+                                    while scan_idx < len(self.iseq.instructions):
+                                        scan_op = self.iseq.instructions[scan_idx]['op']
                                         if scan_op == 'nop':
                                             scan_idx += 1
                                             continue
@@ -1133,9 +1281,9 @@ def translate_iseq(iseq, all_iseqs):
                                 if not then_code and not else_code:
                                     stack.append(f"({cond} ? {wrap_if_complex(then_val)} : {wrap_if_complex(else_val)})")
                                 else:
-                                    then_str = indent_code(then_code)
+                                    then_str = self.indent_code(then_code)
                                     if then_val != 'nil': then_str += f"\n  {then_val}"
-                                    else_str = indent_code(else_code)
+                                    else_str = self.indent_code(else_code)
                                     if else_val != 'nil': else_str += f"\n  {else_val}"
                                     stack.append(f"if {cond}\n{then_str}\nelse\n{else_str}\nend")
                             else:
@@ -1143,14 +1291,14 @@ def translate_iseq(iseq, all_iseqs):
                                     then_code.append(then_stack.pop())
                                 if len(else_stack) > len(stack):
                                     else_code.append(else_stack.pop())
-                                then_str = indent_code(then_code)
-                                else_str = indent_code(else_code)
+                                then_str = self.indent_code(then_code)
+                                else_str = self.indent_code(else_code)
                                 append_statement(f"if {cond}\nelse\n{else_str}\nend" if not then_str else f"if {cond}\n{then_str}\nelse\n{else_str}\nend")
                             pc = min(else_target_idx, end_idx) - 1
                         else:
                             then_stack = list(stack)
                             recursive_target = min(target_idx, end_idx)
-                            then_code = translate_range(pc + 1, recursive_target, then_stack, pop_final=False)
+                            then_code = self.translate_range(pc + 1, recursive_target, then_stack, pop_final=False)
                             
                             is_expr = False
                             then_val = 'nil'
@@ -1158,8 +1306,8 @@ def translate_iseq(iseq, all_iseqs):
                             if len(then_stack) > len(stack):
                                 is_expr = True
                                 scan_idx = target_idx
-                                while scan_idx < len(iseq.instructions):
-                                    scan_op = iseq.instructions[scan_idx]['op']
+                                while scan_idx < len(self.iseq.instructions):
+                                    scan_op = self.iseq.instructions[scan_idx]['op']
                                     if scan_op == 'nop':
                                         scan_idx += 1
                                         continue
@@ -1172,8 +1320,8 @@ def translate_iseq(iseq, all_iseqs):
                             elif len(then_stack) == len(stack) and then_stack and then_stack[-1] != stack[-1]:
                                 is_expr = True
                                 scan_idx = target_idx
-                                while scan_idx < len(iseq.instructions):
-                                    scan_op = iseq.instructions[scan_idx]['op']
+                                while scan_idx < len(self.iseq.instructions):
+                                    scan_op = self.iseq.instructions[scan_idx]['op']
                                     if scan_op == 'nop':
                                         scan_idx += 1
                                         continue
@@ -1193,17 +1341,17 @@ def translate_iseq(iseq, all_iseqs):
                                         else:
                                             stack.append(f"({cond} ? {then_val} : {else_val})")
                                     else:
-                                        then_str = indent_code(then_code)
+                                        then_str = self.indent_code(then_code)
                                         if then_val != 'nil': then_str += f"\n  {then_val}"
                                         stack.append(f"if {cond}\n{then_str}\nelse\n  {else_val}\nend")
                                 else:
-                                    then_str = indent_code(then_code)
+                                    then_str = self.indent_code(then_code)
                                     if then_val != 'nil': then_str += f"\n  {then_val}"
                                     stack.append(f"if {cond}\n{then_str}\nend")
                             else:
                                 if len(then_stack) > len(stack):
                                     then_code.append(then_stack.pop())
-                                then_str = indent_code(then_code)
+                                then_str = self.indent_code(then_code)
                                 if then_str:
                                     append_statement(f"if {cond}\n{then_str}\nend")
                             pc = recursive_target - 1
@@ -1213,7 +1361,7 @@ def translate_iseq(iseq, all_iseqs):
                         
                 elif op == 'branchif':
                     # Check for early return in non-jumping path
-                    early_ret = get_early_return_val(pc + 1, target_idx - 1) if target_idx > pc + 1 else None
+                    early_ret = self.get_early_return_val(pc + 1, target_idx - 1) if target_idx > pc + 1 else None
                     if early_ret is not None:
                         if early_ret != 'nil':
                             if early_ret.startswith(('raise', 'exit')):
@@ -1223,8 +1371,8 @@ def translate_iseq(iseq, all_iseqs):
                         else:
                             append_statement(f"{keyword} unless {cond}")
                         pc = target_idx - 1
-                    elif get_simple_return_val(target_idx, cond) is not None:
-                        ret_val, ret_offsets = get_simple_return_val(target_idx, cond)
+                    elif self.get_simple_return_val(target_idx, cond) is not None:
+                        ret_val, ret_offsets = self.get_simple_return_val(target_idx, cond)
                         if ret_val != 'nil':
                             if ret_val.startswith(('raise', 'exit')):
                                 append_statement(f"{ret_val} if {cond}")
@@ -1232,12 +1380,12 @@ def translate_iseq(iseq, all_iseqs):
                                 append_statement(f"{keyword} {ret_val} if {cond}")
                         else:
                             append_statement(f"{keyword} if {cond}")
-                        skipped_offsets.update(ret_offsets)
+                        self.skipped_offsets.update(ret_offsets)
                     elif target_idx > pc:
                         # Forward branch
                         then_stack = list(stack)
                         recursive_target = min(target_idx, end_idx)
-                        then_code = translate_range(pc + 1, recursive_target, then_stack, pop_final=False)
+                        then_code = self.translate_range(pc + 1, recursive_target, then_stack, pop_final=False)
                         
                         is_expr = False
                         then_val = 'nil'
@@ -1245,8 +1393,8 @@ def translate_iseq(iseq, all_iseqs):
                         if len(then_stack) > len(stack):
                             is_expr = True
                             scan_idx = target_idx
-                            while scan_idx < len(iseq.instructions):
-                                scan_op = iseq.instructions[scan_idx]['op']
+                            while scan_idx < len(self.iseq.instructions):
+                                scan_op = self.iseq.instructions[scan_idx]['op']
                                 if scan_op == 'nop':
                                     scan_idx += 1
                                     continue
@@ -1259,8 +1407,8 @@ def translate_iseq(iseq, all_iseqs):
                         elif len(then_stack) == len(stack) and then_stack and then_stack[-1] != stack[-1]:
                             is_expr = True
                             scan_idx = target_idx
-                            while scan_idx < len(iseq.instructions):
-                                scan_op = iseq.instructions[scan_idx]['op']
+                            while scan_idx < len(self.iseq.instructions):
+                                scan_op = self.iseq.instructions[scan_idx]['op']
                                 if scan_op == 'nop':
                                     scan_idx += 1
                                     continue
@@ -1280,17 +1428,17 @@ def translate_iseq(iseq, all_iseqs):
                                     else:
                                         stack.append(f"({cond} ? {else_val} : {then_val})")
                                 else:
-                                    then_str = indent_code(then_code)
+                                    then_str = self.indent_code(then_code)
                                     if then_val != 'nil': then_str += f"\n  {then_val}"
                                     stack.append(f"unless {cond}\n{then_str}\nelse\n  {else_val}\nend")
                             else:
-                                then_str = indent_code(then_code)
+                                then_str = self.indent_code(then_code)
                                 if then_val != 'nil': then_str += f"\n  {then_val}"
                                 stack.append(f"unless {cond}\n{then_str}\nend")
                         else:
                             if len(then_stack) > len(stack):
                                 then_code.append(then_stack.pop())
-                            then_str = indent_code(then_code)
+                            then_str = self.indent_code(then_code)
                             if then_str:
                                 append_statement(f"unless {cond}\n{then_str}\nend")
                         pc = recursive_target - 1
@@ -1304,20 +1452,20 @@ def translate_iseq(iseq, all_iseqs):
                 except (ValueError, IndexError):
                     target_offset = None
                 if target_offset is not None:
-                    target_idx = offset_to_idx.get(target_offset)
+                    target_idx = self.offset_to_idx.get(target_offset)
                     if target_idx is not None and target_idx > pc:
                         cond_end_idx = target_idx
                         found_loop = False
                         loop_type = None
                         back_idx = None
-                        for i in range(target_idx, min(target_idx + 10, len(iseq.instructions))):
-                            iop = iseq.instructions[i]['op']
+                        for i in range(target_idx, min(target_idx + 10, len(self.iseq.instructions))):
+                            iop = self.iseq.instructions[i]['op']
                             if iop in ('branchif', 'branchunless', 'branchnil'):
                                 try:
-                                    back_target = int(iseq.instructions[i]['args'].split()[-1])
+                                    back_target = int(self.iseq.instructions[i]['args'].split()[-1])
                                 except (ValueError, IndexError):
                                     back_target = None
-                                b_idx = offset_to_idx.get(back_target)
+                                b_idx = self.offset_to_idx.get(back_target)
                                 if b_idx is not None and pc < b_idx <= target_idx:
                                     cond_end_idx = i
                                     found_loop = True
@@ -1329,23 +1477,23 @@ def translate_iseq(iseq, all_iseqs):
                         
                         if found_loop:
                             cond_stack = list(stack)
-                            translate_range(target_idx, cond_end_idx, cond_stack, pop_final=False)
+                            self.translate_range(target_idx, cond_end_idx, cond_stack, pop_final=False)
                             cond = cond_stack.pop() if cond_stack else 'true'
                             
                             body_stack = []
-                            body_code = translate_range(back_idx, target_idx, body_stack, pop_final=False)
-                            body_str = indent_code(body_code)
+                            body_code = self.translate_range(back_idx, target_idx, body_stack, pop_final=False)
+                            body_str = self.indent_code(body_code)
                             
                             append_statement(f"{loop_type} {cond}\n{body_str}\nend")
                             pc = cond_end_idx + 1
                             continue
                 
             elif op == 'leave':
-                is_block_or_class = ("block" in iseq.name) or iseq.name.startswith("<class:") or iseq.name.startswith("<module:")
+                self.is_block_or_class = ("block" in self.iseq.name) or self.iseq.name.startswith("<class:") or self.iseq.name.startswith("<module:")
                 is_early_return = False
-                if not is_block_or_class:
-                    for j in range(pc + 1, len(iseq.instructions)):
-                        if iseq.instructions[j]['op'] not in ('nop', 'leave'):
+                if not self.is_block_or_class:
+                    for j in range(pc + 1, len(self.iseq.instructions)):
+                        if self.iseq.instructions[j]['op'] not in ('nop', 'leave'):
                             is_early_return = True
                             break
                             
@@ -1374,7 +1522,7 @@ def translate_iseq(iseq, all_iseqs):
                             else:
                                 append_statement(f"return {val}")
                         else:
-                            is_top_or_class = iseq.name in ("<top (required)>", "<encoded>") or iseq.name.startswith("<class:") or iseq.name.startswith("<module:")
+                            is_top_or_class = self.iseq.name in ("<top (required)>", "<encoded>") or self.iseq.name.startswith("<class:") or self.iseq.name.startswith("<module:")
                             if is_top_or_class:
                                 if re.match(r'^(true|false|nil|self|\[\]|\{\})$', val) or \
                                    re.match(r'^@{1,2}[a-zA-Z_][a-zA-Z0-9_]*[!?]?$', val) or \
@@ -1408,9 +1556,9 @@ def translate_iseq(iseq, all_iseqs):
                 
                 if is_root and pc < end_idx:
                     ensure_stack = []
-                    ensure_stmts = translate_range(pc, end_idx, ensure_stack, pop_final=True, is_root=False)
+                    ensure_stmts = self.translate_range(pc, end_idx, ensure_stack, pop_final=True, is_root=False)
                     if ensure_stmts:
-                        if is_block_or_class or not statements:
+                        if self.is_block_or_class or not statements:
                             statements.extend(ensure_stmts)
                         else:
                             last_stmt = statements[-1] if statements else ''
@@ -1421,8 +1569,8 @@ def translate_iseq(iseq, all_iseqs):
                             if is_dead_code:
                                 statements.extend(ensure_stmts)
                             else:
-                                main_str = indent_code(statements)
-                                ensure_str = indent_code(ensure_stmts)
+                                main_str = self.indent_code(statements)
+                                ensure_str = self.indent_code(ensure_stmts)
                                 statements = [f"begin\n{main_str}\nensure\n{ensure_str}\nend"]
                 
                 break
@@ -1463,24 +1611,24 @@ def translate_iseq(iseq, all_iseqs):
                             append_statement(val)
         return statements
 
-    def scan_defaults(iseq):
-        skipped_offsets = set()
+    def scan_defaults(self, iseq):
+        self.skipped_offsets = set()
         defaults = {}
         scan_idx = 0
-        while scan_idx < len(iseq.instructions):
-            instr = iseq.instructions[scan_idx]
+        while scan_idx < len(self.iseq.instructions):
+            instr = self.iseq.instructions[scan_idx]
             op = instr['op']
             if op == 'checkkeyword':
-                if scan_idx + 1 < len(iseq.instructions):
-                    next_instr = iseq.instructions[scan_idx + 1]
+                if scan_idx + 1 < len(self.iseq.instructions):
+                    next_instr = self.iseq.instructions[scan_idx + 1]
                     if next_instr['op'] == 'branchif':
                         try:
                             target_offset = int(next_instr['args'].split()[-1])
-                            if target_offset in offset_to_idx:
-                                target_idx = offset_to_idx[target_offset]
+                            if target_offset in self.offset_to_idx:
+                                target_idx = self.offset_to_idx[target_offset]
                                 setlocal_idx = target_idx - 1
                                 if setlocal_idx > scan_idx + 1:
-                                    setlocal_instr = iseq.instructions[setlocal_idx]
+                                    setlocal_instr = self.iseq.instructions[setlocal_idx]
                                     if setlocal_instr['op'].startswith('setlocal'):
                                         raw_var_name = setlocal_instr['args'].split('@')[0].strip()
                                         local_idx_match = re.search(r'@(\d+)', setlocal_instr['args'])
@@ -1489,25 +1637,25 @@ def translate_iseq(iseq, all_iseqs):
                                         
                                         # Translate default value expression
                                         sub_stack = []
-                                        # Backup resolved_counts to prevent side-effects
-                                        saved_counts = resolved_counts.copy()
-                                        translate_range(scan_idx + 2, setlocal_idx - 1, sub_stack, pop_final=False)
-                                        resolved_counts.clear()
-                                        resolved_counts.update(saved_counts)
+                                        # Backup self.resolved_counts to prevent side-effects
+                                        saved_counts = self.resolved_counts.copy()
+                                        self.translate_range(scan_idx + 2, setlocal_idx - 1, sub_stack, pop_final=False)
+                                        self.resolved_counts.clear()
+                                        self.resolved_counts.update(saved_counts)
                                         
                                         default_val = sub_stack[-1] if sub_stack else 'nil'
-                                        defaults[var_name] = default_val
+                                        self.defaults[var_name] = default_val
                                         
                                         # Skip checkkeyword and setlocal blocks
                                         for idx in range(scan_idx, target_idx):
-                                            skipped_offsets.add(iseq.instructions[idx]['offset'])
+                                            self.skipped_offsets.add(self.iseq.instructions[idx]['offset'])
                                         scan_idx = target_idx
                                         continue
                         except ValueError:
                             pass
             elif op in ('putnil', 'putobject', 'putstring', 'putobject_INT2FIX_0_', 'putobject_INT2FIX_1_', 'putobject_INT2FIX_0', 'putobject_INT2FIX_1'):
-                if scan_idx + 1 < len(iseq.instructions):
-                    next_instr = iseq.instructions[scan_idx + 1]
+                if scan_idx + 1 < len(self.iseq.instructions):
+                    next_instr = self.iseq.instructions[scan_idx + 1]
                     if next_instr['op'].startswith('setlocal'):
                         raw_var_name = next_instr['args'].split('@')[0].strip()
                         local_idx_match = re.search(r'@(\d+)', next_instr['args'])
@@ -1515,28 +1663,29 @@ def translate_iseq(iseq, all_iseqs):
                         var_name = sanitize_ruby_identifier(raw_var_name, local_idx)
                         
                         is_opt_param = False
-                        for p in iseq.locals.values():
+                        for p in self.iseq.locals.values():
                             if p['name'] == var_name and p['tag'] and p['tag'].startswith('Opt='):
                                 is_opt_param = True
                                 break
                         if is_opt_param:
                             if op == 'putnil':
-                                defaults[var_name] = 'nil'
+                                self.defaults[var_name] = 'nil'
                             elif op in ('putobject_INT2FIX_0_', 'putobject_INT2FIX_0'):
-                                defaults[var_name] = '0'
+                                self.defaults[var_name] = '0'
                             elif op in ('putobject_INT2FIX_1_', 'putobject_INT2FIX_1'):
-                                defaults[var_name] = '1'
+                                self.defaults[var_name] = '1'
                             else:
-                                defaults[var_name] = instr['args'].strip()
-                            skipped_offsets.add(instr['offset'])
-                            skipped_offsets.add(next_instr['offset'])
+                                self.defaults[var_name] = instr['args'].strip()
+                            self.skipped_offsets.add(instr['offset'])
+                            self.skipped_offsets.add(next_instr['offset'])
                             scan_idx += 2
                             continue
             break
-        return skipped_offsets, defaults
+        return self.skipped_offsets, defaults
 
-    skipped_offsets, defaults = scan_defaults(iseq)
-    res = translate_range(0, len(iseq.instructions), [], is_root=True)
+    self.skipped_offsets, defaults = self.scan_defaults(self.iseq)
+    res = self.translate_range(0, len(self.iseq.instructions), [], is_root=True)
     code = "\n".join(res)
 
     return code
+

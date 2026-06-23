@@ -68,37 +68,61 @@
 
 ---
 
-## 4. `decompiler/translator.py` - Bộ biên dịch ngược / Decompiler Core
+## 4. `decompiler/translator.py` - Bộ biên dịch ngược (Orchestrator)
 
 **🇻🇳 Tiếng Việt:**
-**Chức năng:** Abstract Interpreter (Trình thông dịch trừu tượng). Chuyển `ISeq` thành Ruby String thực sự.
-Đây là bộ não lớn nhất và phức tạp nhất, hoạt động theo mô hình **Stack-based Simulation** (Giả lập ngăn xếp):
-- **Stack Ảo (`stack`)**: Thay vì đưa dữ liệu thực vào Stack như khi chạy mã, translator đẩy "Cú pháp Ruby dưới dạng String" vào Stack. 
-  - *Ví dụ:* Gặp `putobject 5`, đẩy `"5"` vào. Gặp `putobject 10`, đẩy `"10"` vào. Gặp `opt_plus`, pop `"10"`, pop `"5"`, đẩy `"(5 + 10)"` vào.
-- **Hàm `translate_range(start_idx, end_idx)`**: Là một hàm đệ quy dịch từ vị trí dòng lệnh này đến dòng lệnh khác.
+**Chức năng:** Đóng vai trò là luồng điều hướng chính của việc giả lập Stack-based Simulation. Chuyển `ISeq` thành Ruby String thực sự.
+- Trước đây file này là trái tim lớn nhất và phức tạp nhất, dài gần 1700 dòng. Tuy nhiên, logic xử lý các phép toán đơn giản đã được tách ra, file này hiện tại chỉ đóng vai trò Điều phối (Orchestrator) cho các vòng lặp, rẽ nhánh và gọi hàm phức tạp.
 - **Xử lý rẽ nhánh (Branching & Control Flow):**
   - **If/Else (`branchif`, `branchunless`)**: Nó sử dụng thuật toán "Look-ahead" (nhìn về phía trước). Nó mô phỏng giả lập một stack của nhánh `then` và một stack của nhánh `else`. So sánh hai stack này: nếu kích thước thay đổi, đó là một khối rẽ nhánh. Còn nếu kích thước bằng nhau nhưng phần tử trên cùng khác nhau, đó là biểu thức trả về giá trị (ví dụ `cond ? a : b`).
   - **Vòng lặp (`while`, `until`)**: Phát hiện các lệnh `jump` có mục tiêu quay ngược lại lên trên (backward branch).
   - **Ngoại lệ (`rescue`)**: Khi quét qua các mã offset, so sánh với `catch_table`. Nếu trúng offset của block `rescue`, kích hoạt luồng biên dịch đoạn rẽ nhánh lỗi bằng cách gộp nhánh lệnh lại trong khối `begin...rescue...end`.
-- **Dọn dẹp rò rỉ bộ nhớ Stack**: Phía cuối `translate_range`, thuật toán rà soát và xả các biến tạm rác (những định danh bị bỏ thừa trên stack không xài tới) dưới dạng các chuỗi riêng rẽ.
-*Nhận xét logic:* Logic xử lý lệnh (Opcode Dispatch) thực chất là hàng trăm block `if op == '...'` rất đồ sộ. Việc giữ nó trong cùng một module là hợp lý vì các lệnh có tính liên kết chặt chẽ với nhau thông qua danh sách `stack` cục bộ.
 
 **🇬🇧 English:**
-**Function:** Abstract Interpreter. Converts `ISeq` into an actual Ruby String.
-This is the largest and most complex brain, operating on a **Stack-based Simulation** model:
-- **Virtual Stack (`stack`)**: Instead of pushing real data into the Stack like when running code, the translator pushes "Ruby Syntax as Strings" into the Stack. 
-  - *Example:* Encounters `putobject 5`, pushes `"5"`. Encounters `putobject 10`, pushes `"10"`. Encounters `opt_plus`, pops `"10"`, pops `"5"`, pushes `"(5 + 10)"`.
-- **Function `translate_range(start_idx, end_idx)`**: A recursive function translating from one instruction line position to another.
+**Function:** Acts as the main navigation flow for the Stack-based Simulation. Converts `ISeq` into an actual Ruby String.
+- Previously, this file was the largest and most complex heart, nearly 1700 lines long. However, the logic for processing simple operations has been extracted, and this file now acts as an Orchestrator for loops, branching, and complex function calls.
 - **Branching & Control Flow:**
   - **If/Else (`branchif`, `branchunless`)**: It uses a "Look-ahead" algorithm. It simulates a stack for the `then` branch and a stack for the `else` branch. Compares these two stacks: if the size changes, it's a statement branch block. If the sizes are equal but the top elements differ, it's a value-returning expression (e.g., `cond ? a : b`).
   - **Loops (`while`, `until`)**: Detects `jump` instructions with upward targets (backward branches).
   - **Exceptions (`rescue`)**: When scanning through offset codes, it compares them with the `catch_table`. If it hits a `rescue` block's offset, it triggers the decompilation flow for the error branch by wrapping the instruction branches within a `begin...rescue...end` block.
-- **Stack Memory Leak Cleanup**: At the end of `translate_range`, the algorithm reviews and flushes garbage temporary variables (unused identifiers abandoned on the stack) as separate strings.
-*Logic Observation:* The instruction processing logic (Opcode Dispatch) is essentially hundreds of massive `if op == '...'` blocks. Keeping it in the same module is reasonable because the instructions are tightly coupled through the local `stack` list.
 
 ---
 
-## 5. `decompiler/main.py` & `__main__.py` - Orchestrator (Điều phối)
+## 5. Thư mục `decompiler/core/` - Kiến trúc tách rời / Decoupled Core
+
+**🇻🇳 Tiếng Việt:**
+**Chức năng:** Chứa logic nghiệp vụ được bóc tách từ `translator.py` nhằm giảm độ phức tạp và dễ bảo trì.
+- **`core/handlers.py`**: Xử lý các Opcodes thuần tuý về mặt dữ liệu và thao tác ngăn xếp (Stack Manipulation).
+  - Chứa hàm `handle_simple_op(op, args, stack, append_statement)`.
+  - **Logic hoạt động bên trong:**
+    1. **Rút trích tham số (Pop):** Với các phép toán hai ngôi (như `opt_plus`), hàm sẽ gọi `stack.pop()` hai lần để lấy ra vế phải (rhs) và vế trái (lhs).
+    2. **Tối ưu cú pháp:** Sử dụng `strip_outer_parens` để bóc tách ngoặc đơn thừa trước khi ghép chuỗi, ngăn ngừa việc tạo ra các biểu thức bị lồng ngoặc quá sâu như `(((a + b) + c))`.
+    3. **Đẩy kết quả (Push):** Ghép nối thành biểu thức Ruby hợp lệ (ví dụ `f"({lhs} + {rhs})"`) và đẩy ngược lại vào `stack`.
+    4. **Tín hiệu điều khiển:** Hàm trả về `True` nếu đã xử lý thành công Opcode, giúp vòng lặp chính ở `translator.py` biết và bỏ qua (continue) việc kiểm tra các lệnh khác. Trả về `False` nếu đây là một Opcode phức tạp.
+  - Hàm này bao thầu toàn bộ hàng chục Opcodes liên quan đến toán học (`opt_plus`, `opt_minus`, `opt_mult`), xử lý mảng/hash (`newarray`, `newhash`, `expandarray`), các phép so sánh (`opt_eq`, `opt_lt`, `opt_gt`), và các phép gán biến đổi trực tiếp trên Stack (`checktype`, `tostring`, `concatstrings`).
+  - Việc tách rời module này giúp gỡ bỏ hơn 200 dòng code thừa thãi khỏi bộ máy chính, giúp dễ dàng kiểm thử các lệnh thao tác mảng/toán học mà không lo phá hỏng luồng Control Flow (if/else/loops).
+- **`core/branching.py`** & **`core/__init__.py`**: Cấu trúc thiết kế mở giúp cô lập thêm các thuật toán "Look-ahead" (nhìn trước rẽ nhánh) của Decompiler sau này.
+
+*Nhận xét logic:* Việc truyền tham chiếu list (`stack`) từ bộ máy chính `translator.py` vào `handlers.py` là một mô hình thiết kế tối ưu trong Python vì list là dạng truyền tham chiếu (pass by reference), giúp thay đổi được trạng thái ngăn xếp mà không cần phải nhúng toàn bộ kiến trúc Object Oriented Programming (OOP) rườm rà.
+
+**🇬🇧 English:**
+**Function:** Contains business logic extracted from `translator.py` to reduce complexity and improve maintainability.
+- **`core/handlers.py`**: Handles pure data and stack-oriented Opcodes (Stack Manipulation).
+  - Contains the function `handle_simple_op(op, args, stack, append_statement)`.
+  - **Internal Logic Flow:**
+    1. **Operand Extraction (Pop):** For binary operations (like `opt_plus`), it calls `stack.pop()` twice to extract the right-hand side (rhs) and left-hand side (lhs).
+    2. **Syntax Optimization:** Uses `strip_outer_parens` to peel off redundant parentheses before formatting, preventing heavily nested expressions like `(((a + b) + c))`.
+    3. **Result Insertion (Push):** Formats a valid Ruby expression (e.g., `f"({lhs} + {rhs})"`) and pushes it back onto the `stack`.
+    4. **Control Signal:** Returns `True` if it successfully handled the Opcode, signaling the main loop in `translator.py` to skip further checks. Returns `False` if it's a complex Opcode requiring Orchestrator handling.
+  - This function covers dozens of Opcodes related to mathematics (`opt_plus`, `opt_minus`, `opt_mult`), array/hash manipulation (`newarray`, `newhash`, `expandarray`), comparisons (`opt_eq`, `opt_lt`, `opt_gt`), and direct stack mutating assignments (`checktype`, `tostring`, `concatstrings`).
+  - Decoupling this module removes over 200 lines of boilerplate from the main engine, making it easy to test array/math manipulation commands without breaking the highly complex Control Flow (if/else/loops).
+- **`core/branching.py`** & **`core/__init__.py`**: An open design structure to further isolate "Look-ahead" branching algorithms of the Decompiler in the future.
+
+*Logic Observation:* Passing the list reference (`stack`) from the main engine `translator.py` to `handlers.py` is an optimal design pattern in Python because lists are passed by reference, allowing the stack state to be modified without needing to embed a cumbersome full Object Oriented Programming (OOP) architecture.
+
+---
+
+## 6. `decompiler/main.py` & `__main__.py` - Orchestrator (Điều phối)
 
 **🇻🇳 Tiếng Việt:**
 **Chức năng:** Giao tiếp với hệ điều hành và luồng đầu vào.
